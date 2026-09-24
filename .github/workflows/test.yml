@@ -1,0 +1,132 @@
+# Test goid on every Go minor release since 1.5, on every architecture that release supports.
+# Non-native architectures run under qemu-user via binfmt_misc, so plain "go test" just works.
+# The Go version list is fetched from go.dev each run, so new Go releases are picked up automatically.
+# Each job covers one Go version and loops over its architectures.
+
+name: Test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  versions:
+    name: List Go versions
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.list.outputs.go }}
+      latest: ${{ steps.list.outputs.latest }}
+    steps:
+      - name: Fetch latest patch release of each Go minor version >= 1.5
+        id: list
+        run: |
+          releases=$(curl -fsSL 'https://go.dev/dl/?mode=json&include=all' | jq -c '
+            [ .[] | select(.stable) | .version | ltrimstr("go") | split(".") | map(tonumber) ]')
+          # The test job only compares minor versions, so it assumes every release is Go 1.x.
+          others=$(echo "$releases" | jq -c '[ .[] | select(.[0] != 1) | map(tostring) | join(".") ]')
+          if [ "$others" != "[]" ]; then
+            echo "::error::Non-1.x Go releases found: $others. Update this workflow to handle them."
+            exit 1
+          fi
+          versions=$(echo "$releases" | jq -c '
+            [ .[] | select(.[1] >= 5) ] | group_by(.[1]) | map(max | map(tostring) | join("."))')
+          echo "Go versions: $versions"
+          echo "go=$versions" >> "$GITHUB_OUTPUT"
+          echo "latest=$(echo "$versions" | jq -r '.[-1]')" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Go ${{ matrix.go }}
+    needs: versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ${{ fromJSON(needs.versions.outputs.go) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false # No go.sum and no dependencies to cache.
+
+      - name: Register qemu-user for all foreign architectures
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
+
+      - name: Get Go minor version
+        id: ver
+        run: echo "minor=$(echo "${{ matrix.go }}" | cut -d. -f2)" >> "$GITHUB_OUTPUT"
+
+      # Only wasip1/wasm needs wasmtime, and that target arrived in Go 1.21.
+      - name: Install wasmtime for wasip1/wasm
+        if: fromJSON(steps.ver.outputs.minor) >= 21
+        uses: bytecodealliance/actions/wasmtime/setup@v1
+
+      - name: Test every linux and wasm GOARCH
+        shell: bash
+        env:
+          minor: ${{ steps.ver.outputs.minor }}
+        run: |
+          set -u
+
+          # Go before 1.10 cannot locate its own GOROOT, so set it explicitly.
+          export GOROOT="$(dirname "$(dirname "$(command -v go)")")"
+          export CGO_ENABLED=0
+          export GOTOOLCHAIN=local # Stop Go 1.21+ from downloading a different toolchain.
+          # The wasm exec wrappers live in misc/wasm before Go 1.24, then lib/wasm.
+          export PATH="$GOROOT/lib/wasm:$GOROOT/misc/wasm:$PATH"
+
+          if [ "$minor" -lt 11 ]; then
+            # No module support before Go 1.11, so build from a GOPATH tree.
+            export GOPATH="$RUNNER_TEMP/gopath"
+            pkgdir="$GOPATH/src/github.com/berwynhoyt/goid"
+            mkdir -p "$(dirname "$pkgdir")"
+            cp -a "$GITHUB_WORKSPACE" "$pkgdir"
+            cd "$pkgdir"
+          else
+            export GO111MODULE=on
+          fi
+
+          # "go tool dist list" arrived in Go 1.7, so hard-code targets for the earlier versions.
+          if [ "$minor" -ge 7 ]; then
+            targets=$(go tool dist list | grep -E '^(linux/[^/]+|js/wasm|wasip1/wasm)$')
+          else
+            targets="linux/386 linux/amd64 linux/arm linux/arm64 linux/ppc64 linux/ppc64le"
+            [ "$minor" -ge 6 ] && targets="$targets linux/mips64 linux/mips64le"
+          fi
+
+          summary="| Target | Result |"$'\n'"|---|---|"$'\n'
+          failed=0
+          # Usage: check <label> <GOOS> <GOARCH> [extra go test flags...]
+          check() {
+            local label=$1 goos=$2 goarch=$3; shift 3
+            echo "::group::$label"
+            if GOOS=$goos GOARCH=$goarch go test -v "$@" .; then
+              summary+="| $label | pass |"$'\n'
+            else
+              summary+="| $label | **FAIL** |"$'\n'
+              echo "::error::Go ${{ matrix.go }} $label failed"
+              failed=1
+            fi
+            echo "::endgroup::"
+          }
+
+          for t in $targets; do
+            check "$t" "${t%/*}" "${t#*/}"
+          done
+          # The purego tag must select the slow fallback instead of assembly.
+          check "linux/amd64 purego" linux amd64 -tags purego
+          # Race detection needs cgo, so run it only natively on the latest Go.
+          # It also enables checkptr, which validates the unsafe pointer arithmetic.
+          if [ "${{ matrix.go }}" = "${{ needs.versions.outputs.latest }}" ]; then
+            CGO_ENABLED=1 check "linux/amd64 race" linux amd64 -race
+          fi
+          echo "## Go ${{ matrix.go }}"$'\n'"$summary" >> "$GITHUB_STEP_SUMMARY"
+          exit $failed
