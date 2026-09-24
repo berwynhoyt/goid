@@ -12,11 +12,11 @@ import (
 // ptrSize is exported to goid_asm.s via go_asm.h as const_ptrSize.
 const ptrSize = unsafe.Sizeof(uintptr(0))
 
-// getSlow returns the current goroutine's ID by parsing runtime.Stack() output.
+// GetSlow returns the current goroutine's ID by parsing runtime.Stack() output.
 // The first line of the trace looks like "goroutine 123 [running]:".
 // It is slow but uses only public APIs, though the trace format is not formally specified.
-// We use it to check that we've identified the right offset within g for the fast id lookup by Get().
-func getSlow() uint64 {
+// Tests use this to check that the fast version has identified the right offset within g for the fast id lookup by Get().
+func GetSlow() uint64 {
 	var buf [64]byte
 	s := buf[:runtime.Stack(buf[:], false)]
 	s = bytes.TrimPrefix(s, []byte("goroutine "))
@@ -49,16 +49,17 @@ func init() {
 		id uint64
 	}
 
-	// Run this many goroutines to check that our location works in all of them.
-	var datas [5]data
+	// Run several goroutines to check that our location works in all of them.
+	const num_goroutines = 5
+	var datas [num_goroutines]data
 	ch := make(chan data)
 	done := make(chan struct{})
 	defer close(done)
 
-	// Fetch g and getSlow() from each of our goroutines
+	// Fetch g and GetSlow() from each of our goroutines
 	for range len(datas) {
 		go func() {
-			ch <- data{getg(), getSlow()}
+			ch <- data{getg(), GetSlow()}
 			// Keep alive until the scan is done so g struct is not released.
 			<-done
 		}()
@@ -92,12 +93,12 @@ func UsingFallback() bool {
 }
 
 // Get returns the current goroutine ID instantly.
-// This uses assembly code to access the goroutine struct for performance 1000x faster than getSlow().
+// This uses assembly code to access the goroutine struct for performance 1000x faster than GetSlow().
 // It relies on init() which computes the goidOffset to match this version of Go.
 func Get() uint64 {
 	g := getg()
 	if g == nil {
-		return getSlow()
+		return GetSlow()
 	}
 	return readGoid(g, goidOffset)
 }
