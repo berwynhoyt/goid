@@ -3,6 +3,9 @@
 # The Go version list is fetched from go.dev each run, so new Go releases are picked up automatically.
 # Each job covers one Go version and loops over its architectures.
 
+# The script at the end is rather complicated. Much of the excess is to get old versions of Go
+# running nicely on qemu and also allowing qemu to test mips architectures.
+
 name: Test
 
 on:
@@ -55,19 +58,52 @@ jobs:
           go-version: ${{ matrix.go }}
           cache: false # No go.sum and no dependencies to cache.
 
-      - name: Register qemu-user for all foreign architectures
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: all
-
       - name: Get Go minor version
         id: ver
         run: echo "minor=$(echo "${{ matrix.go }}" | cut -d. -f2)" >> "$GITHUB_OUTPUT"
+
+      # Ubuntu's qemu covers ppc64 and 32-bit mips, which docker/setup-qemu-action's image lacks.
+      - name: Install qemu-user for foreign architectures
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static
+          echo "Registered binfmt handlers:"; ls /proc/sys/fs/binfmt_misc/
+
+      # Go before 1.10 has two bugs that stop its foreign binaries running under qemu.
+      # The script patches the runtime and assembler, as described in its comments.
+      # The assembler fix needs the compiler rebuilt, which takes a few seconds.
+      - name: Patch old Go for qemu
+        if: fromJSON(steps.ver.outputs.minor) < 10
+        run: |
+          export GOROOT="$(dirname "$(dirname "$(command -v go)")")"
+          if [ "$(python3 .github/patch-old-go.py "$GOROOT" ${{ steps.ver.outputs.minor }})" = rebuild ]; then
+            CGO_ENABLED=0 go install -a cmd/asm cmd/compile
+          fi
+
+      # The js/wasm launcher in Go 1.18-1.20 assigns globalThis.crypto.
+      # Node 19+ made that read-only, so use Node 18 for those versions.
+      - name: Install Node 18 for js/wasm
+        if: fromJSON(steps.ver.outputs.minor) >= 18 && fromJSON(steps.ver.outputs.minor) <= 20
+        uses: actions/setup-node@v5
+        with:
+          node-version: 18
 
       # Only wasip1/wasm needs wasmtime, and that target arrived in Go 1.21.
       - name: Install wasmtime for wasip1/wasm
         if: fromJSON(steps.ver.outputs.minor) >= 21
         uses: bytecodealliance/actions/wasmtime/setup@v1
+
+      # Go 1.21's wasip1 launcher uses a wasmtime flag that wasmtime 14 renamed.
+      # Override it with the invocation Go 1.22 uses for current wasmtime.
+      - name: Fix the wasip1 launcher for Go 1.21
+        if: fromJSON(steps.ver.outputs.minor) == 21
+        run: |
+          mkdir -p "$RUNNER_TEMP/wasmfix"
+          cat > "$RUNNER_TEMP/wasmfix/go_wasip1_wasm_exec" <<'EOF'
+          #!/usr/bin/env bash
+          exec wasmtime run --dir=/ --env PWD="$PWD" --env PATH="$PATH" -W max-wasm-stack=1048576 "$1" "${@:2}"
+          EOF
+          chmod +x "$RUNNER_TEMP/wasmfix/go_wasip1_wasm_exec"
 
       - name: Test every linux and wasm GOARCH
         shell: bash
@@ -81,7 +117,8 @@ jobs:
           export CGO_ENABLED=0
           export GOTOOLCHAIN=local # Stop Go 1.21+ from downloading a different toolchain.
           # The wasm exec wrappers live in misc/wasm before Go 1.24, then lib/wasm.
-          export PATH="$GOROOT/lib/wasm:$GOROOT/misc/wasm:$PATH"
+          # The wasmfix directory, if created above, overrides them for Go 1.21.
+          export PATH="$RUNNER_TEMP/wasmfix:$GOROOT/lib/wasm:$GOROOT/misc/wasm:$PATH"
 
           if [ "$minor" -lt 11 ]; then
             # No module support before Go 1.11, so build from a GOPATH tree.
@@ -101,25 +138,49 @@ jobs:
             targets="linux/386 linux/amd64 linux/arm linux/arm64 linux/ppc64 linux/ppc64le"
             [ "$minor" -ge 6 ] && targets="$targets linux/mips64 linux/mips64le"
           fi
+          # Go 1.11-1.13 list riscv64 but cannot compile it. The port became usable in Go 1.14.
+          if [ "$minor" -lt 14 ]; then
+            targets=$(printf '%s\n' $targets | grep -vx linux/riscv64)
+          fi
 
           summary="| Target | Result |"$'\n'"|---|---|"$'\n'
           failed=0
+          fail() {
+            summary+="| $1 | **FAIL** |"$'\n'
+            echo "::error::Go ${{ matrix.go }} $1 failed"
+            failed=1
+          }
+
           # Usage: check <label> <GOOS> <GOARCH> [extra go test flags...]
+          # Runs take at most about 3s, even under qemu or wasm, so fail hangs fast.
           check() {
             local label=$1 goos=$2 goarch=$3; shift 3
             echo "::group::$label"
-            if GOOS=$goos GOARCH=$goarch go test -v "$@" .; then
+            if GOOS=$goos GOARCH=$goarch go test -v -timeout 10s "$@" .; then
               summary+="| $label | pass |"$'\n'
             else
-              summary+="| $label | **FAIL** |"$'\n'
-              echo "::error::Go ${{ matrix.go }} $label failed"
-              failed=1
+              fail "$label"
             fi
             echo "::endgroup::"
           }
 
           for t in $targets; do
-            check "$t" "${t%/*}" "${t#*/}"
+            goos=${t%/*} goarch=${t#*/}
+            # Before Go 1.17, mips binaries lack the .MIPS.abiflags header qemu needs to set the FPU mode.
+            # The -exec wrapper adds it before running each test binary. See its comments.
+            if { [ "$goarch" = mips ] || [ "$goarch" = mipsle ]; } && [ "$minor" -lt 17 ]; then
+              check "$t" "$goos" "$goarch" -exec "$GITHUB_WORKSPACE/.github/mips-abiflags.py"
+            elif [ "$goarch" = mips64 ] || [ "$goarch" = mips64le ]; then
+              # Go's runtime does misaligned 8-byte stores in its epoll code on mips64.
+              # Real kernels fix those up, but qemu before 11.1 raises SIGBUS instead.
+              # Loongson-3A CPU models are exempt from qemu's alignment check, so use one.
+              QEMU_CPU=Loongson-3A1000 check "$t" "$goos" "$goarch"
+            elif [ "$t" = js/wasm ] && [ "$minor" -lt 13 ]; then
+              # Examples capture output through a pipe, which js lacked before Go 1.13.
+              check "$t" "$goos" "$goarch" -run '^Test'
+            else
+              check "$t" "$goos" "$goarch"
+            fi
           done
           # The purego tag must select the slow fallback instead of assembly.
           check "linux/amd64 purego" linux amd64 -tags purego
