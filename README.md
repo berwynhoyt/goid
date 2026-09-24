@@ -1,18 +1,21 @@
 # goid
 
-This package implements direct instant access to the goroutine ID (goid) for all versions of Go (including future), and all architectures that the Go compiler/assembler supports. The package is written by Berwyn Hoyt for YottaDB, copyright 2006, and released under an [MIT license](LICENSE).
+[![Test](https://github.com/berwynhoyt/goid/actions/workflows/test.yml/badge.svg)](https://github.com/berwynhoyt/goid/actions/workflows/test.yml)
+
+This package implements direct instant access to the goroutine ID (goid) for all versions of Go (including future), and all architectures that the Go compiler/assembler supports. The package is written by Berwyn Hoyt for [YottaDB](https://yottadb.com/), copyright 2026, and released under an [MIT license](LICENSE).
 
 Many packages attempt to provide a fast goid (e.g. by [Peter Mattis](https://github.com/petermattis/goid) or [OutrigDev](https://github.com/outrigdev/goid)), but invariably depend on specific versions of Go, and only work with certain architectures. This package has neither limitation.
-
-Go designers discourage production-code access to the goid because they want to prevent goroutine-local storage that can lead to writing fragile, implicit code. However, there are valid and sometimes important reasons to need the goid. Many of these (e.g. debug visibility and profiling) do not require speed. But a few use-cases do require both speed and production access. For example, the Go wrapper for YottaDB needs to use the goroutine ID as a safety check (specifically, incorrect use of multiple database connections within a single goroutine, causing deadlocks). Such use of the goid is deemed acceptable, and even desirable, to prevent unintentional programmer errors. Use it with care.
-
-Since fast access to the goid requires assembler code, the package still provides a slow fallback for whether the developer is using an alternative Go compiler without an assember (e.g. gccgo or gollvm).
 
 ## Features
 
 * **Fast:** instant assembler access to the goid
 * **All versions of Go** (including future versions). Well, actually only back as far as Go 1.5, but who uses that anymore?
 * **All architectures** that the standard Go assembler supports.
+* **Fallback** to a slow version when using an alternate Go compiler without an assembler (e.g. gccgo or gollvm).
+
+## Rationale
+
+Go designers discourage production-code access to the goid because they want to prevent goroutine-local storage that can lead to writing fragile, implicit code. However, there are valid and sometimes important reasons to need the goid. Many of these (e.g. debug visibility and profiling) do not require speed. But a few use-cases do require both speed and production access. For example, the Go wrapper for YottaDB needs to use the goroutine ID as a safety check (specifically, incorrect use of multiple database connections within a single goroutine, causing deadlocks). Such use of the goid is deemed acceptable, and even desirable, to prevent unintentional programmer errors. Use it with care.
 
 ## Quick start
 
@@ -20,15 +23,11 @@ Since fast access to the goid requires assembler code, the package still provide
 go get github.com/berwynhoyt/goid
 ```
 
-## Example
+### Example
 
 ```go
 package main
-
-import (
-	"fmt"
-	"github.com/berwynhoyt/goid"
-)
+import ("fmt"; "github.com/berwynhoyt/goid")
 
 func ExampleGet() {
 	fmt.Println("Current goroutine ID:", goid.Get())
@@ -40,7 +39,14 @@ func ExampleGet() {
 ## Implementation
 
 * The assembly code provides a one-line assembly instruction for each supported Go architecture to return the goroutine struct. This struct is used by all versions of Go, but the offset of goid within it varies between Go versions.
-* The init() function finds this offset by scanning the struct until it finds the goid that matches the more standard GetSlow(), and which also agrees with the location found in several concurrent goroutines.
+* The init() function finds this offset by scanning the struct until it finds the goid that matches the more standard GetSlow(), and which also agrees with the location found in 5 concurrent goroutines.
+
+## Test matrix
+
+CI tests every Go minor release since 1.5 on every architecture it supports, using qemu.
+This matrix updates automatically after each push to main.
+
+[![goid test matrix](https://berwynhoyt.github.io/goid/matrix.svg)](https://berwynhoyt.github.io/goid/)
 
 ## Benchmarks
 

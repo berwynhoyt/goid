@@ -145,6 +145,9 @@ jobs:
 
           summary="| Target | Result |"$'\n'"|---|---|"$'\n'
           failed=0
+          # One JSON line per check, merged into the full matrix by the report job.
+          results="$RUNNER_TEMP/results-${{ matrix.go }}.jsonl"
+          : > "$results"
           fail() {
             summary+="| $1 | **FAIL** |"$'\n'
             echo "::error::Go ${{ matrix.go }} $1 failed"
@@ -154,13 +157,15 @@ jobs:
           # Usage: check <label> <GOOS> <GOARCH> [extra go test flags...]
           # Runs take at most about 3s, even under qemu or wasm, so fail hangs fast.
           check() {
-            local label=$1 goos=$2 goarch=$3; shift 3
+            local label=$1 goos=$2 goarch=$3 result=pass; shift 3
             echo "::group::$label"
             if GOOS=$goos GOARCH=$goarch go test -v -timeout 10s "$@" .; then
               summary+="| $label | pass |"$'\n'
             else
               fail "$label"
+              result=fail
             fi
+            printf '{"go":"%s","target":"%s","result":"%s"}\n' "${{ matrix.go }}" "$label" $result >> "$results"
             echo "::endgroup::"
           }
 
@@ -183,11 +188,67 @@ jobs:
             fi
           done
           # The purego tag must select the slow fallback instead of assembly.
-          check "linux/amd64 purego" linux amd64 -tags purego
+          check purego linux amd64 -tags purego
           # Race detection needs cgo, so run it only natively on the latest Go.
           # It also enables checkptr, which validates the unsafe pointer arithmetic.
           if [ "${{ matrix.go }}" = "${{ needs.versions.outputs.latest }}" ]; then
-            CGO_ENABLED=1 check "linux/amd64 race" linux amd64 -race
+            CGO_ENABLED=1 check race linux amd64 -race
           fi
           echo "## Go ${{ matrix.go }}"$'\n'"$summary" >> "$GITHUB_STEP_SUMMARY"
           exit $failed
+
+      - name: Upload results for the matrix report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ matrix.go }}
+          path: ${{ runner.temp }}/results-${{ matrix.go }}.jsonl
+          if-no-files-found: ignore
+          retention-days: 1
+
+  # Merge every job's results into one Go version x target grid.
+  # It goes into the run summary, and on main it is published to GitHub Pages.
+  # The README embeds matrix.svg from there.
+  report:
+    name: Test matrix
+    needs: [versions, test]
+    if: always() && needs.versions.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: results-*
+          path: results
+          merge-multiple: true
+
+      - name: Build matrix
+        env:
+          GO_VERSIONS: ${{ needs.versions.outputs.go }}
+        run: |
+          python3 .github/test-matrix.py results site
+          cat site/matrix.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload matrix for GitHub Pages
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  publish:
+    name: Publish matrix
+    needs: report
+    if: >-
+      always() && needs.report.result == 'success'
+      && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
