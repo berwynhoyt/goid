@@ -11,7 +11,7 @@ Since fast access to the goid requires assembler code, the package still provide
 ## Features
 
 * **Fast:** instant assembler access to the goid
-* **All versions of Go** (including future versions).
+* **All versions of Go** (including future versions). Well, actually only back as far as Go 1.5, but who uses that anymore?
 * **All architectures** that the standard Go assembler supports.
 
 ## Quick start

@@ -1,3 +1,3 @@
 module github.com/berwynhoyt/goid
 
-go 1.22
+go 1.12

@@ -16,7 +16,7 @@ func TestGetMatchesSlow(t *testing.T) {
 // TestGetStable checks that repeated calls in one goroutine return the same ID.
 func TestGetStable(t *testing.T) {
 	id := Get()
-	for i := range 1000 {
+	for i := 0; i < 1000; i++ {
 		if i%100 == 0 {
 			runtime.Gosched() // Encourage migration to another OS thread.
 		}
@@ -31,13 +31,14 @@ func TestGetStable(t *testing.T) {
 func TestGetConcurrent(t *testing.T) {
 	const rounds = 5
 	const perRound = 200
-	for round := range rounds {
+	for round := 0; round < rounds; round++ {
 		ids := make([]uint64, perRound)
 		errs := make(chan string, perRound)
 		var wg sync.WaitGroup
-		for i := range perRound {
+		for i := 0; i < perRound; i++ {
 			wg.Add(1)
-			go func() {
+			// Pass i as an argument for legacy Go before 1.22 when loop variables were shared across iterations.
+			go func(i int) {
 				defer wg.Done()
 				id := Get()
 				runtime.Gosched()
@@ -48,7 +49,7 @@ func TestGetConcurrent(t *testing.T) {
 					errs <- "Get() changed within one goroutine"
 				}
 				ids[i] = id
-			}()
+			}(i)
 		}
 		wg.Wait()
 		close(errs)
@@ -82,7 +83,7 @@ func TestGetLockedThread(t *testing.T) {
 
 func BenchmarkGet(b *testing.B) {
 	var sink uint64
-	for range b.N {
+	for i := 0; i < b.N; i++ {
 		sink += Get()
 	}
 	_ = sink
@@ -90,7 +91,7 @@ func BenchmarkGet(b *testing.B) {
 
 func BenchmarkGetSlow(b *testing.B) {
 	var sink uint64
-	for range b.N {
+	for i := 0; i < b.N; i++ {
 		sink += GetSlow()
 	}
 	_ = sink

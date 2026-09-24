@@ -32,7 +32,9 @@ func GetSlow() uint64 {
 
 // readGoid returns the uint64 at g+offset.
 func readGoid(g unsafe.Pointer, offset uintptr) uint64 {
-	return *(*uint64)(unsafe.Add(g, offset))
+	// Same as unsafe.Add() in newer Go versions
+	// The uintptr arithmetic must stay in one expression to remain a valid unsafe.Pointer conversion.
+	return *(*uint64)(unsafe.Pointer(uintptr(g) + offset))
 }
 
 // goidOffset stores the offset of g.goid, calculated by init()
@@ -57,7 +59,7 @@ func init() {
 	defer close(done)
 
 	// Fetch g and GetSlow() from each of our goroutines
-	for range len(datas) {
+	for i := 0; i < len(datas); i++ {
 		go func() {
 			ch <- data{getg(), GetSlow()}
 			// Keep alive until the scan is done so g struct is not released.

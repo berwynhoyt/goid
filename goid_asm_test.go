@@ -1,5 +1,6 @@
 // Keep these build tags identical to goid_asm.go.
 //go:build gc && !purego
+// +build gc,!purego
 
 package goid
 

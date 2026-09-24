@@ -1,5 +1,6 @@
 // UsingFallback() intentionally doesn't return false if purego is set, so skip this test
 //go:build gc && !purego
+// +build gc,!purego
 
 package goid_test
 

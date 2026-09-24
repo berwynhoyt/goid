@@ -10,9 +10,10 @@
 // The user can test whether fallback is selected with UsingFallback().
 // Keep these build tags identical to goid_asm.go and the inverse of goid_other.go.
 //go:build gc && !purego
+// +build gc,!purego
 
-// Note: nothing prevents this from working in go versions back as far as 1.5. I don't know about anything earlier than that.
-// However, goid.go would have to stop using newer language syntax: like for range() and unsafe.Add()
+// This works back to Go 1.5, which introduced go_asm.h and the (TLS) pseudo-register.
+// The legacy plus-build line above keeps tags working before Go 1.17 introduced //go:build.
 
 #include "go_asm.h"
 #include "textflag.h"

@@ -1,5 +1,6 @@
 // Declares getg() for goid_asm.s. Keep these build tags identical to goid_asm.s.
 //go:build gc && !purego
+// +build gc,!purego
 
 package goid
 
