@@ -2,7 +2,6 @@
 //
 // Deprecated: This package has moved to GitLab.
 // Please use https://gitlab.com/YottaDB/Lang/goid instead.
-
 package goid
 
 import (
