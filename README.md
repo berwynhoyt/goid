@@ -2,6 +2,10 @@
 
 [![Test](https://github.com/berwynhoyt/goid/actions/workflows/test.yml/badge.svg)](https://github.com/berwynhoyt/goid/actions/workflows/test.yml)
 
+**NOTE:** This package has moved to [https://gitlab.com/YottaDB/Lang/goid](https://gitlab.com/YottaDB/Lang/goid).
+
+
+
 This package implements direct instant access to the goroutine ID (goid) for all versions of Go (including future), and all architectures that the Go compiler/assembler supports. The package is written by Berwyn Hoyt for [YottaDB](https://yottadb.com/), copyright 2026, and released under an [MIT license](LICENSE).
 
 Many packages attempt to provide a fast goid (e.g. by [Peter Mattis](https://github.com/petermattis/goid) or [OutrigDev](https://github.com/outrigdev/goid)), but invariably depend on specific versions of Go, and only work with certain architectures. This package has neither limitation.

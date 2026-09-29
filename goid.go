@@ -1,4 +1,7 @@
-// Get goroutine ID fast for every architecture supported by Go
+// Package goid has been moved to GitLab.
+//
+// Deprecated: This package has moved to GitLab.
+// Please use https://gitlab.com/YottaDB/Lang/goid instead.
 
 package goid
 
